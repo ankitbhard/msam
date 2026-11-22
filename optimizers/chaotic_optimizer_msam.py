@@ -106,58 +106,12 @@ class MultimodalChaoticOptimizerMSAM:
     # ── Shapley contribution estimator ────────────────────────────────────────
 
     @torch.no_grad()
-    def _compute_shapley(self,
-                         inputs: Dict[str, torch.Tensor],
-                         labels: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """
-        Estimate per-modality contribution via Shapley values.
-
-        For 2 modalities (image, gene):
-            φ_image = 0.5 * acc_image + 0.5 * (acc_full - acc_gene)
-            φ_gene  = 0.5 * acc_gene  + 0.5 * (acc_full - acc_image)
-
-        Requires 3 forward passes. Returns normalised values in [0, 1].
-        """
-        self.model.eval()
-        surv_labels = labels.get("survival") if isinstance(labels, dict) else labels
-
-        acc = {}
-
-        # Unimodal passes
-        for modality in self.modality_names:
-            uni_input = {
-                k: v if k == modality else torch.zeros_like(v)
-                for k, v in inputs.items()
-            }
-            out   = self.model(uni_input)
-            logits = out["survival"] if isinstance(out, dict) else out
-            preds  = logits.argmax(dim=1)
-            acc[modality] = (preds == surv_labels).float().mean().item()
-
-        # Full model pass
-        out_full   = self.model(inputs)
-        logits_full = out_full["survival"] if isinstance(out_full, dict) else out_full
-        preds_full  = logits_full.argmax(dim=1)
-        acc["full"] = (preds_full == surv_labels).float().mean().item()
-
-        self.model.train()
-
-        # Shapley values for 2 modalities
-        m0, m1 = self.modality_names[0], self.modality_names[1]
-        phi = {
-            m0: 0.5 * acc[m0] + 0.5 * (acc["full"] - acc[m1]),
-            m1: 0.5 * acc[m1] + 0.5 * (acc["full"] - acc[m0]),
-        }
-
-        # Normalise to sum to 1 (keep non-negative)
-        phi = {k: max(v, 0.0) for k, v in phi.items()}
-        total = sum(phi.values())
-        if total > 0:
-            phi = {k: v / total for k, v in phi.items()}
-        else:
-            phi = {k: 1.0 / len(self.modality_names) for k in self.modality_names}
-
-        return phi
+    def _compute_shapley(self, inputs, labels):
+        """Survival-specific Cox-loss improvement Shapley (two modalities)."""
+        from optimizers.survival_coalition import cox_shapley_contributions
+        return cox_shapley_contributions(
+            self.model, inputs, labels, self.modality_names
+        )
 
     # ── Dominant modality encoder parameters ─────────────────────────────────
 
