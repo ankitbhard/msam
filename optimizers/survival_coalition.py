@@ -8,10 +8,18 @@ def batch_cox_loss(risk, times, events):
     risk = risk.reshape(-1)
     times = times.reshape(-1)
     events = events.reshape(-1).float()
+    # Breslow ties and batch-size normalization, matching train_survival.
     order = torch.argsort(times, descending=True)
+    ordered_times = times[order]
     risk = risk[order]
-    return -((risk - torch.logcumsumexp(risk, dim=0)) *
-             events[order]).mean()
+    events = events[order]
+    _, counts = torch.unique_consecutive(ordered_times, return_counts=True)
+    ends = counts.cumsum(0) - 1
+    group_id = torch.repeat_interleave(
+        torch.arange(len(counts), device=risk.device), counts
+    )
+    log_denom = torch.logcumsumexp(risk, dim=0)[ends][group_id]
+    return -((risk - log_denom) * events).mean()
 
 
 @torch.no_grad()
