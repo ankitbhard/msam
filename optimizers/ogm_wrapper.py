@@ -76,36 +76,12 @@ class OGMWrapper:
         }
 
     @torch.no_grad()
-    def _compute_contributions(self,
-                               inputs: Dict[str, torch.Tensor],
-                               labels: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """
-        Approximate per-modality contribution via unimodal survival accuracy.
-        Zeros out all modalities except the one being evaluated.
-        Returns normalized contributions summing to 1.
-        """
-        self.model.eval()
-        contributions: Dict[str, float] = {}
-
-        surv_labels = labels.get("survival") if isinstance(labels, dict) else labels
-
-        for modality in self.modality_names:
-            uni_input = {
-                k: v if k == modality else torch.zeros_like(v)
-                for k, v in inputs.items()
-            }
-            out    = self.model(uni_input)
-            logits = out["survival"] if isinstance(out, dict) else out
-            preds  = logits.argmax(dim=1)
-            acc    = (preds == surv_labels).float().mean().item()
-            contributions[modality] = acc
-
-        self.model.train()
-
-        total = sum(contributions.values())
-        if total > 0:
-            contributions = {k: v / total for k, v in contributions.items()}
-        return contributions
+    def _compute_contributions(self, inputs, labels):
+        """Use matched survival Cox-loss coalition utilities."""
+        from optimizers.survival_coalition import cox_shapley_contributions
+        return cox_shapley_contributions(
+            self.model, inputs, labels, self.modality_names
+        )
 
     @torch.no_grad()
     def _modulate_gradients(self, contributions: Dict[str, float]) -> None:
