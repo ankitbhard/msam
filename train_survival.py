@@ -83,12 +83,18 @@ def cox_loss(risk_scores: torch.Tensor,
     os_months    : [B] survival time
     vital_status : [B] event indicator (1 = died, 0 = censored)
     """
-    order       = torch.argsort(os_months, descending=True)
-    risk        = risk_scores[order]
-    events      = vital_status[order].float()
-    log_cum_sum = torch.logcumsumexp(risk, dim=0)
-    loss        = -torch.mean((risk - log_cum_sum) * events)
-    return loss
+    # Breslow ties: all samples at the same time share a risk-set denominator.
+    order = torch.argsort(os_months.reshape(-1), descending=True)
+    times = os_months.reshape(-1)[order]
+    risk = risk_scores.reshape(-1)[order]
+    events = vital_status.reshape(-1)[order].float()
+    _, counts = torch.unique_consecutive(times, return_counts=True)
+    ends = counts.cumsum(0) - 1
+    group_id = torch.repeat_interleave(
+        torch.arange(len(counts), device=risk.device), counts
+    )
+    log_denom = torch.logcumsumexp(risk, dim=0)[ends][group_id]
+    return -((risk - log_denom) * events).mean()
 
 
 # ── Survival dataset ─────────────────────────────────────────────────────────
