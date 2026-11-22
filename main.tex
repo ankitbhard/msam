@@ -1,35 +1,21 @@
-\documentclass[letterpaper]{article} % DO NOT CHANGE THIS
-\usepackage[submission]{aaai2027}  % DO NOT CHANGE THIS
-\usepackage[hyphens]{url}  % DO NOT CHANGE THIS
-\usepackage{graphicx} % DO NOT CHANGE THIS
-\urlstyle{rm} % DO NOT CHANGE THIS
-\def\UrlFont{\rm}  % DO NOT CHANGE THIS
-\usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
-\usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
-\frenchspacing  % DO NOT CHANGE THIS
-
+\documentclass[runningheads]{llncs}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{url}
 \usepackage{algorithm}
 \usepackage{algorithmic}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{booktabs}
 \usepackage{multirow}
-\usepackage{subcaption}
-
-\setcounter{secnumdepth}{0}
-
-\pdfinfo{
-/TemplateVersion (2027.1)
-}
+% ICCABS draft: historical tables must be rerun with revised pipeline.
 
 \begin{document}
 
 \title{SGM-SAM: Sharpness-Aware Gradient-Modulated Optimization for Multimodal Cancer Survival Prediction}
-\author{
-    Written by Anonymous Authors
-}
-\affiliations{
-    Anonymous Institution
-}
+\titlerunning{SGM-SAM for Cancer Survival Prediction}
+\author{Anonymous Authors}
+\authorrunning{Anonymous Authors}
+\institute{Anonymous Institution}
 \maketitle
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +47,7 @@ high-imbalance cohorts rather than a universal improvement. Ablation
 shows SAM perturbation is the primary driver, with Shapley targeting
 providing cross-cohort stability.
 \end{abstract}
+\keywords{Multimodal survival \and SAM \and Gradient modulation}
 
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -301,18 +288,18 @@ $\mathbf{h} = \sum_m \alpha_m \tilde{\mathbf{h}}^m
 \in \mathbb{R}^{256}$.
 
 \textbf{Survival head.}
-The fused vector passes through a shared representation layer
-($256 \!\to\! 256$, ReLU, dropout) followed by a linear projection:
+The fused vector passes through a shared $256\to256$ layer,
+ReLU, and dropout, then a \emph{single-output} linear projection:
 \begin{equation}
-r = \Bigl(\mathbf{W}_r \;\, \text{Dropout}_{p}\!\bigl(
-  \text{ReLU}(\mathbf{W}_s \, \mathbf{h})\bigr)\Bigr)_{\!2}
+r_i=\mathbf{w}_r^\top\operatorname{Dropout}_p
+\left(\operatorname{ReLU}(\mathbf{W}_s\mathbf{h}_i)\right)+b_r
+\in\mathbb{R}.
 \label{eq:surv}
 \end{equation}
-where $(\cdot)_2$ selects the second logit as the predicted risk
-score~$r_i$ for patient~$i$, trained with the negative Cox partial
-log-likelihood~\cite{cox1972}.
+The proposed single-logit design replaces the legacy two-output head;
+the historical experiment tables remain pending rerun.
 
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/fig_pipeline_msam.png}
 \caption{End-to-end pipeline. \textbf{Top:} Modality-specific
@@ -326,7 +313,7 @@ modality's encoder, (3)~gradient modulation that suppresses
 dominant-modality updates with Gaussian noise injection, and
 (4)~base optimizer update with cosine LR scheduling.}
 \label{fig:pipeline}
-\end{figure*}
+\end{figure}
 
 \subsection{Cox Partial Likelihood Loss}
 
@@ -338,10 +325,14 @@ proportional hazards model~\cite{cox1972}:
 \left( r_i - \log \sum_{j: t_j \geq t_i} e^{r_j} \right)
 \label{eq:cox}
 \end{equation}
-where $r_i$ is the risk score from Eq.~\ref{eq:surv} for patient~$i$,
-$\delta_i \!\in\! \{0,1\}$ is the censoring indicator
-($\delta_i\!=\!1$ for observed death), $t_i$ is the survival time,
-and the risk set includes all patients with $t_j \geq t_i$.
+Here $\delta_i=1$ is an observed event, $\delta_i=0$ denotes
+censoring, and $t_i$ is the observed time. The implementation
+computes this objective on minibatches $\mathcal{B}$ of size 32:
+$\mathcal{D}_{\mathcal{B}}=\{i\in\mathcal{B}:\delta_i=1\}$
+and $R_i^{\mathcal{B}}=\{j\in\mathcal{B}:t_j\geq t_i\}$.
+These batch-local risk sets approximate the full-training-fold
+partial likelihood. Breslow handling of tied event times is a
+separate approximation and should not be confused with batching.
 
 \subsection{Shapley Value Estimation}
 
@@ -515,7 +506,7 @@ instance (NVIDIA T4 GPU, 16\,GB). Code will be made publicly available upon acce
 
 \subsection{Comparison to State-of-the-Art}
 
-\begin{table*}[!ht]
+\begin{table}[t]
 \centering
 \caption{Test C-index (mean $\pm$ std, 5-fold CV). \textbf{Bold} = best per cancer. All methods in the top block share the same architecture and hyperparameters; only the optimizer differs. Bottom block shows published SOTA references (different architectures).}
 \label{tab:main}
@@ -541,7 +532,7 @@ PORPOISE~\cite{chen2022porpoise}
   & 0.558 & 0.711 & 0.586 & 0.527 & 0.587 \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 Table~\ref{tab:main} reports test C-index (mean $\pm$ std across 5
 folds) for all six optimizers on all five cancers.
@@ -573,7 +564,7 @@ provide complementary benefits to architectural design.
 Table~\ref{tab:ablation} decomposes SGM-SAM into its constituent
 components.
 
-\begin{table*}[!ht]
+\begin{table}[t]
 \centering
 \caption{Ablation study (Test C-index, 5-fold CV). Each row adds or
 modifies one component relative to the cosine baseline.}
@@ -604,7 +595,7 @@ Cosine & -- & -- & --
   & \underline{.654} & \textbf{.722} & .621 & .566 & .571 \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 Key findings from the ablation:
 
@@ -826,6 +817,7 @@ end-to-end tile-level training and $n$-modal fusion via Shapley
 generalization~\cite{shapley1953}.
 
 % ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{splncs04}
 \bibliography{references}
 
 \end{document}
