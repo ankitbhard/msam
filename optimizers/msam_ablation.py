@@ -68,17 +68,22 @@ class MSAMUniform(MultimodalChaoticOptimizerMSAM):
     M-SAM with UNIFORM/RANDOM modality selection instead of Shapley.
 
     Still applies OGM-GE and SAM perturbation, but selects the "dominant"
-    modality randomly (50/50) rather than using Shapley values. This shows
-    that principled modality identification via Shapley is important.
+    modality randomly (50/50) rather than using Shapley values. This tests whether
+    random selection is as effective as Shapley selection.
     """
 
     @torch.no_grad()
     def _compute_shapley(self,
                          inputs: Dict[str, torch.Tensor],
                          labels: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Return uniform 50/50 contributions (no Shapley computation)."""
-        n = len(self.modality_names)
-        return {m: 1.0 / n for m in self.modality_names}
+        """Randomly select a modality for each step (no Shapley passes).
+
+        One-hot weights ensure the parent's argmax genuinely samples the
+        dominant encoder, rather than choosing the first modality on ties.
+        """
+        selected = int(torch.randint(len(self.modality_names), (1,)).item())
+        return {m: float(i == selected)
+                for i, m in enumerate(self.modality_names)}
 
 
 # ── Self-test ─────────────────────────────────────────────────────────────────
@@ -87,6 +92,7 @@ if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from models.joint_model import build_model
+    from optimizers.survival_coalition import batch_cox_loss
 
     B, N_GENES, IMG_DIM = 4, 1000, 256
 
@@ -102,12 +108,12 @@ if __name__ == "__main__":
     )
 
     inputs = {"image": torch.randn(B, IMG_DIM), "gene": torch.randn(B, N_GENES)}
-    labels = {"survival": torch.randint(0, 2, (B,))}
+    labels = {"survival": torch.randint(0, 2, (B,)), "os_months": torch.rand(B)*24+1, "vital_status": torch.randint(0, 2, (B,)).float()}
 
     model.train()
     def closure():
         out = model(inputs)
-        loss = torch.nn.CrossEntropyLoss()(out["survival"], labels["survival"])
+        loss = batch_cox_loss(out["survival"].squeeze(-1), labels["os_months"], labels["vital_status"])
         return loss, out
 
     loss, _ = no_ogm.step(closure, inputs, labels)
@@ -124,19 +130,18 @@ if __name__ == "__main__":
     )
 
     inputs2 = {"image": torch.randn(B, IMG_DIM), "gene": torch.randn(B, N_GENES)}
-    labels2 = {"survival": torch.randint(0, 2, (B,))}
+    labels2 = {"survival": torch.randint(0, 2, (B,)), "os_months": torch.rand(B)*24+1, "vital_status": torch.randint(0, 2, (B,)).float()}
 
     model2.train()
     def closure2():
         out = model2(inputs2)
-        loss = torch.nn.CrossEntropyLoss()(out["survival"], labels2["survival"])
+        loss = batch_cox_loss(out["survival"].squeeze(-1), labels2["os_months"], labels2["vital_status"])
         return loss, out
 
     loss2, _ = uniform.step(closure2, inputs2, labels2)
     hist = uniform.get_contribution_history()
-    # Uniform should always give 0.5 / 0.5
-    assert all(abs(v - 0.5) < 1e-6 for v in hist["image"]), \
-        f"Expected 0.5, got {hist['image']}"
+    # Random selection must produce one-hot contribution pairs.
+    assert all(v in (0.0, 1.0) for v in hist["image"])
     print(f"MSAMUniform — loss={loss2.item():.4f}  contributions={hist}  ✓")
 
     # Test MSAMShapleyGMOnly
@@ -150,12 +155,12 @@ if __name__ == "__main__":
     )
 
     inputs3 = {"image": torch.randn(B, IMG_DIM), "gene": torch.randn(B, N_GENES)}
-    labels3 = {"survival": torch.randint(0, 2, (B,))}
+    labels3 = {"survival": torch.randint(0, 2, (B,)), "os_months": torch.rand(B)*24+1, "vital_status": torch.randint(0, 2, (B,)).float()}
 
     model3.train()
     def closure3():
         out = model3(inputs3)
-        loss = torch.nn.CrossEntropyLoss()(out["survival"], labels3["survival"])
+        loss = batch_cox_loss(out["survival"].squeeze(-1), labels3["os_months"], labels3["vital_status"])
         return loss, out
 
     loss3, _ = shapley_gm.step(closure3, inputs3, labels3)
