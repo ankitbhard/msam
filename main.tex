@@ -181,6 +181,11 @@ prototypical modal rebalancing via prototype-guided learning rates.
 These methods operate on gradient magnitudes but do not consider the
 geometry of the loss surface.
 
+Li et al.~\cite{li2023agm} study adaptive gradient modulation
+for multimodal fusion strategies; our intervention is distinguished
+by a Shapley-selected SAM parameter perturbation under Cox loss,
+not by claiming that gradient modulation is new.
+
 \subsection{Sharpness-Aware Minimization}
 
 SAM~\cite{foret2021sam} improves generalization by seeking parameters
@@ -193,6 +198,13 @@ adaptive, scale-invariant perturbations.
 GSAM~\cite{zhuang2022gsam} introduces a surrogate gap for efficiency.
 LookSAM~\cite{liu2022looksam} reduces computational overhead by
 periodically recomputing perturbation directions.
+Fan et al.~\cite{fan2024flatten} study cross-modal representation
+flattening to address differences in modality generalization
+and competition; our method instead perturbs encoder parameters
+under a censored survival objective. The motivations overlap,
+so this paper does not claim to be the first to study sharpness
+and modality imbalance jointly.
+
 M-SAM~\cite{rajoli2025msam} achieves modality-aware perturbation by
 splitting the training loss into Shapley-weighted per-modality terms
 and restricting SAM perturbation to the dominant modality's loss
@@ -334,61 +346,70 @@ These batch-local risk sets approximate the full-training-fold
 partial likelihood. Breslow handling of tied event times is a
 separate approximation and should not be confused with batching.
 
-\subsection{Shapley Value Estimation}
-
-For two modalities, the Shapley value~\cite{shapley1953} of each
-modality decomposes the multimodal accuracy into fair per-modality
-contributions. Let $a_{\text{img}}$, $a_{\text{gene}}$, and
-$a_{\text{full}}$ denote the accuracy when only image features, only
-gene features, or both are provided (zeroing out the absent modality):
-\begin{align}
-\phi_{\text{img}}  &= \tfrac{1}{2} a_{\text{img}} +
-    \tfrac{1}{2}(a_{\text{full}} - a_{\text{gene}}) \\
-\phi_{\text{gene}} &= \tfrac{1}{2} a_{\text{gene}} +
-    \tfrac{1}{2}(a_{\text{full}} - a_{\text{img}})
-\end{align}
-These are normalized to sum to 1 after clipping negatives. The
-dominant modality is $m^* = \arg\max_m \phi_m$. This requires three
-forward passes per gradient modulation step.
-
-\subsection{M-SAM: Modality-Aware SAM}
-
-M-SAM~\cite{rajoli2025msam} achieves modality-aware flat-minima
-seeking through two mechanisms:
-
-\textbf{1. Shapley-guided dominant modality identification.}
-Shapley values identify which modality currently dominates learning
-and are used to decompose the total loss into modality-specific
-components.
-
-\textbf{2. Modality-aware SAM perturbation.}
-SAM perturbation is applied \emph{only} to the dominant modality's
-encoder parameters $\theta_{m^*}$, using the gradient of that
-modality's own loss component $\mathcal{L}_{m^*}$:
+\subsection{Survival-Specific Shapley Contributions}
+For a Cox risk score, the binary observed-event label is not a
+survival classification target: censoring affects its value.
+The original implementation used classification accuracy of
+two-output logits against an auxiliary binary label as a
+modality-selection proxy. To support scalar Cox risk and align
+the attribution criterion with survival optimization, the
+\emph{revised} implementation uses Cox partial-likelihood improvement.
+For coalition $S\subseteq\{\mathrm{img},\mathrm{gene}\}$, the input
+to absent modalities is zero-masked and the \emph{same} batch
+of survival times and event indicators is used for all coalitions:
 \begin{equation}
-\hat{\theta}_{m^*} = \theta_{m^*} +
-\rho \frac{\nabla_{\theta_{m^*}} \mathcal{L}_{m^*}}
-{\|\nabla_{\theta_{m^*}} \mathcal{L}_{m^*}\|}
+v(S)=\mathcal{L}_{\mathrm{Cox}}(\varnothing)
+     -\mathcal{L}_{\mathrm{Cox}}(S),\qquad v(\varnothing)=0.
+\label{eq:coalition}
 \end{equation}
-A second forward-backward pass computes gradients at this perturbed
-point. The perturbation is then removed, and the resulting gradients
-are used to update only the dominant modality's parameters, guiding
-it toward flatter minima. Non-dominant modalities are updated in the
-same step using their own unperturbed loss gradients, so they receive
-standard (non-sharpness-aware) updates while the dominant modality
-alone is optimized for flatness.
+Thus the empty-coalition utility is zero by definition, not a
+claim of zero or random classification accuracy. For two modalities:
+\begin{align}
+\phi_{\mathrm{img}}&=\tfrac12 v(\{\mathrm{img}\})
++\tfrac12[v(\{\mathrm{img},\mathrm{gene}\})-v(\{\mathrm{gene}\})],\\
+\phi_{\mathrm{gene}}&=\tfrac12 v(\{\mathrm{gene}\})
++\tfrac12[v(\{\mathrm{img},\mathrm{gene}\})-v(\{\mathrm{img}\})].
+\label{eq:shapley}
+\end{align}
+For gating, clip contributions at zero and normalize:
+$\tilde\phi_m=[\phi_m]_+/\sum_k[\phi_k]_+$; use equal weights
+if the sum is zero or the batch has no observed events.
+The selected modality is $m^*=\arg\max_m\tilde\phi_m$.
+These quantities measure Cox-loss improvement rather than
+C-index. This changes the historical Shapley proxy and therefore
+requires rerunning every optimizer configuration with this change.
+
+\subsection{Shapley-Guided Modality-Targeted SAM}
+Inspired by modality-aware SAM~\cite{rajoli2025msam}, we select
+the dominant encoder and apply a perturbation only to its
+parameters $\theta_{m^*}$. The direction uses the gradient
+of the \emph{total} Cox loss restricted to these parameters:
+\begin{equation}
+\hat{\theta}_{m^*}=\theta_{m^*}+
+\rho\frac{\nabla_{\theta_{m^*}}\mathcal{L}_{\mathrm{Cox}}}
+{\|\nabla_{\theta_{m^*}}\mathcal{L}_{\mathrm{Cox}}\|_2+\varepsilon}.
+\label{eq:targetedsam}
+\end{equation}
+No other parameters are perturbed. Following a second full-model
+forward--backward pass at the perturbed point, the perturbation
+is restored and the optimizer updates \emph{all} trainable
+parameters using the second-pass gradients. In particular,
+non-dominant gradients are evaluated with the dominant encoder
+temporarily perturbed; they are not separate unperturbed
+gradients. This matches the implemented optimizer step.
 
 \subsection{SGM-SAM: Adding Gradient Modulation}
 
 We extend the targeted-SAM step above with a gradient suppression
 mechanism adapted from OGM-GE~\cite{peng2022ogm}. Where Peng et al.\
 gate suppression on a modality accuracy ratio, we substitute the
-Shapley contribution $\phi_{m^*}$ as the gating signal:
+normalized Shapley contribution $\tilde\phi_{m^*}$ as the gating signal:
 
 \textbf{Gradient modulation of dominant modality.}
 Dominant-modality gradients are suppressed by a factor
-$k = 1 - \tanh(\alpha \cdot \phi_{m^*})$, following the functional
-form of Peng et al.~\cite{peng2022ogm}; Gaussian noise
+$k=1-\tanh(\alpha\tilde\phi_{m^*})$ for
+$\tilde\phi_{m^*}>0.5$, and $k=1$ otherwise, following the
+functional form of Peng et al.~\cite{peng2022ogm}; Gaussian noise
 (std = 10\% of gradient std) is injected into the dominant modality's
 gradients for generalization enhancement, as in~\cite{peng2022ogm}.
 
@@ -409,15 +430,15 @@ perturbation radius $\rho$, suppression strength $\alpha$
 \STATE \textit{// --- Targeted SAM (from M-SAM~\cite{rajoli2025msam}) ---}
 \STATE $\mathcal{L}_1 \leftarrow \mathcal{L}_{\text{Cox}}(f_\theta(\mathbf{X}), \mathbf{t}, \boldsymbol{\delta})$
 \STATE Compute $\nabla_\theta \mathcal{L}_1$ via backpropagation
-\STATE $\phi_{\text{img}}, \phi_{\text{gene}} \leftarrow$ \textsc{Shapley}($\mathbf{X}$) \hfill \textit{// 3 forward passes}
-\STATE $m^* \leftarrow \arg\max(\phi_{\text{img}}, \phi_{\text{gene}})$
+\STATE $\tilde\phi_{\text{img}},\tilde\phi_{\text{gene}} \leftarrow$ \textsc{CoxShapley}($\mathbf{X},\mathbf{t},\boldsymbol{\delta}$)
+\STATE $m^* \leftarrow \arg\max(\tilde\phi_{\text{img}},\tilde\phi_{\text{gene}})$
 \STATE $\epsilon \leftarrow \rho \cdot \nabla_{\theta_{m^*}} \mathcal{L}_1 / \|\nabla_{\theta_{m^*}} \mathcal{L}_1\|$ \hfill \textit{// SAM perturbation}
 \STATE $\theta_{m^*} \leftarrow \theta_{m^*} + \epsilon$
 \STATE $\mathcal{L}_2 \leftarrow \mathcal{L}_{\text{Cox}}(f_\theta(\mathbf{X}), \mathbf{t}, \boldsymbol{\delta})$
 \STATE Compute $\nabla_\theta \mathcal{L}_2$ via backpropagation
 \STATE $\theta_{m^*} \leftarrow \theta_{m^*} - \epsilon$ \hfill \textit{// restore}
 \STATE \textit{// --- Shapley-gated GM (adapted from~\cite{peng2022ogm}) ---}
-\STATE $k \leftarrow 1 - \tanh(\alpha \cdot \phi_{m^*})$ \hfill \textit{// suppression factor}
+\STATE $k \leftarrow 1-\tanh(\alpha\tilde\phi_{m^*})$ if $\tilde\phi_{m^*}>0.5$; otherwise $k\leftarrow 1$
 \STATE $\nabla_{\theta_{m^*}} \mathcal{L}_2 \leftarrow k \cdot \nabla_{\theta_{m^*}} \mathcal{L}_2 + \mathcal{N}(0, \sigma^2)$
 \STATE $\theta \leftarrow \text{OptimizerStep}(\theta, \nabla_\theta \mathcal{L}_2)$
 \end{algorithmic}
@@ -437,9 +458,11 @@ mean-pooling over non-overlapping $256\!\times\!256$ patch features.
 This avoids end-to-end tile-level training and enables rapid
 experimentation across optimizer configurations, though it fixes the
 visual representation and precludes task-specific fine-tuning of the
-image encoder. Gene expression profiles are preprocessed by selecting
-the most variable genes (up to 1{,}000 per cohort), followed by log1p transformation
-and standard scaling (fitted on training data only).
+image encoder. Gene expression profiles undergo log1p transformation,
+selection of up to 1{,}000 variable genes, and standard scaling.
+Variance-based gene selection and standard scaling are fitted
+independently within each training fold, then applied to
+validation and test data without refitting, to prevent leakage.
 
 \begin{table}[ht]
 \centering
@@ -506,10 +529,18 @@ instance (NVIDIA T4 GPU, 16\,GB). Code will be made publicly available upon acce
 
 \subsection{Comparison to State-of-the-Art}
 
+\noindent\textbf{Historical results (pending revised reruns).}
+Tables~\ref{tab:main}--\ref{tab:overfitting} and the fold-level
+statistical tests are retained from the original two-logit,
+single-seed experiments. They do \emph{not} evaluate the proposed
+single-logit head and survival-specific Shapley utility. Replace
+these tables with matched multi-seed results before submission.
+
 \begin{table}[t]
 \centering
 \caption{Test C-index (mean $\pm$ std, 5-fold CV). \textbf{Bold} = best per cancer. All methods in the top block share the same architecture and hyperparameters; only the optimizer differs. Bottom block shows published SOTA references (different architectures).}
 \label{tab:main}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lccccc}
 \toprule
 Method & BRCA & KIRC & LUAD & LUSC & STAD \\
@@ -531,7 +562,8 @@ SAM
 PORPOISE~\cite{chen2022porpoise}
   & 0.558 & 0.711 & 0.586 & 0.527 & 0.587 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
+
 \end{table}
 
 Table~\ref{tab:main} reports test C-index (mean $\pm$ std across 5
@@ -569,6 +601,7 @@ components.
 \caption{Ablation study (Test C-index, 5-fold CV). Each row adds or
 modifies one component relative to the cosine baseline.}
 \label{tab:ablation}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lccc|ccccc}
 \toprule
 Config & GM & Shapley & SAM & BRCA & KIRC & LUAD & LUSC & STAD \\
@@ -594,7 +627,8 @@ Cosine & -- & -- & --
   & \checkmark & \checkmark & Dom
   & \underline{.654} & \textbf{.722} & .621 & .566 & .571 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
+
 \end{table}
 
 Key findings from the ablation:
@@ -610,41 +644,30 @@ targeting to GM (+Shapley+GM, mean 0.615) does not recover the loss,
 showing that principled modality identification without
 sharpness-aware perturbation is insufficient.
 
-\textbf{Shapley targeting stabilizes small cohorts.} Random
-modality selection (+GM+SAM rand) achieves high scores on large
-cohorts (BRCA: 0.681) but degrades severely on small ones (LUSC:
-0.529, STAD: 0.568). SGM-SAM's Shapley-guided targeting achieves
-more consistent performance across all cohorts (LUSC: 0.566, STAD:
-0.571), with lower cross-cancer variance. This suggests that
-principled modality identification matters most when data is scarce
-and random perturbation risks destabilizing training.
+\textbf{Mean--stability tradeoff.}
+Random targeting (+GM+SAM rand) has a slightly higher
+five-cohort mean C-index than SGM-SAM (0.629 vs.\ 0.627)
+and improves BRCA (0.681 vs.\ 0.654). SGM-SAM performs better
+on LUSC (0.566 vs.\ 0.529) and slightly better on STAD
+(0.571 vs.\ 0.568), but these contrasts alone do not
+establish a statistically reliable stability advantage.
+Heterogeneous cohort scores should not be treated as
+independent estimates of cross-seed robustness.
 
-\textbf{Combined effect.} The full SGM-SAM framework (GM + Shapley
-+ dominant-modality SAM) achieves the best balance of performance
-and stability across all five cancers, with no catastrophic failures
-on any cohort.
-
-\textbf{Summary.} The ablation reveals that SGM-SAM's three
-components are mutually reinforcing, each addressing a distinct
-failure mode: SAM perturbation escapes the sharp minima endemic to
-small clinical cohorts; gradient modulation prevents the dominant
-modality from overwhelming genomic learning; and Shapley-guided
-targeting directs perturbation to the dominant encoder rather than
-uniformly across all parameters, which would destabilize the weaker
-modality's fragile learning signal. Removing any single component
-exposes the remaining two to the failure mode it addressed---without
-Shapley guidance, SAM perturbs the weaker encoder and undoes its
-progress; without GM, dominant-modality gradients overwrite the flat
-region SAM found; without SAM, neither GM nor Shapley-guided GM can escape sharp
-minima (both $\approx$0.615). The coupled sharpness-imbalance problem
-in cancer survival thus requires all three components acting in
-concert.
+\textbf{Interpretation.}
+The ablation suggests SAM is the primary driver of improvements,
+while Shapley-guided targeting may reduce adverse results on
+some cohorts. The impact of gradient modulation is secondary
+and cohort-dependent; the experiments do not support a claim
+that all three components are uniformly beneficial or necessary.
+Multi-seed paired comparisons are needed to test robustness.
 
 \subsection{Generalization Analysis}
 
-Table~\ref{tab:overfitting} reports the overfitting gap (best
-validation C-index minus test C-index). Lower values indicate better
-generalization.
+Table~\ref{tab:overfitting} reports the historical diagnostic gap
+(best validation C-index minus test C-index). Taking the maximum
+validation C-index produces upward selection bias. The gap
+is not a direct unbiased estimate of generalization error.
 
 \begin{table}[ht]
 \centering
@@ -665,9 +688,9 @@ SAM       & +0.018 & +0.040 & \textbf{+0.031} \\
 \end{tabular}
 \end{table}
 
-SAM-based methods (SAM, SGM-SAM) consistently exhibit smaller
-overfitting gaps than non-SAM methods, confirming that SAM
-perturbation finds flatter minima. SAM achieves the lowest mean gap
+SAM-based methods (SAM, SGM-SAM) show smaller historical
+gaps than non-SAM methods. This is compatible with,
+but does not prove, improved generalization or flatter minima. SAM achieves the lowest mean gap
 (0.031), but at the cost of degrading absolute C-index on LUSC
 (0.536). SGM-SAM achieves a competitive mean gap (0.035) while
 maintaining stable C-index across all cohorts. On BRCA, SAM reduces
@@ -790,9 +813,12 @@ roughly $2$--$3\times$ the per-step cost of standard training
 training). (ii)~TCGA evaluation relies on pre-extracted UNI/UNI2-h
 embeddings~\cite{vorontsov2024virchow, lu2024conch, chen2024uni};
 end-to-end training with tile-level
-attention~\cite{lu2021abmil} remains unexplored. (iii)~The PORPOISE
-reference in Table~\ref{tab:main} uses different embeddings and splits,
-so it is a benchmark rather than a controlled comparison.
+attention~\cite{lu2021abmil} remains unexplored. (iii)~The PORPOISE reference in Table~\ref{tab:main} uses different
+embeddings and splits and is not a controlled comparison.
+(iv)~Equal-epoch comparisons are not compute-normalized;
+future tables should report training wall-clock time per fold.
+(v)~Original results cannot support conclusions about the revised
+single-logit, survival-specific Shapley method until rerun.
 
 \paragraph{Conclusion and future directions.}
 We presented SGM-SAM, an optimizer-level framework that combines
