@@ -4,7 +4,7 @@ Unified Joint Model for pan-cancer multimodal survival learning.
 Handles all 6 cancer types (BRCA, LUAD, KIRC, STAD, LUSC, GBM) via config:
   - Variable image embedding dim (1024 UNI / 1536 UNI2-h)
   - Pluggable fusion: 'attention' (default) or 'concat' (ablation)
-  - Single survival head only (binary: died ≤3yr vs alive >3yr)
+  - Single survival head only (scalar Cox risk output)
 
 Usage:
     from models.joint_model import build_model
@@ -15,7 +15,7 @@ Usage:
         fusion_type  = "attention",
     )
     out = model({"image": img_tensor, "gene": gene_tensor})
-    # out["survival"]  → [B, 2]
+    # out["survival"]  → [B, 1]
 """
 
 import torch
@@ -38,7 +38,7 @@ class JointModel(nn.Module):
     Forward expects:
         inputs = {"image": Tensor[B, image_dim], "gene": Tensor[B, n_genes]}
     Returns:
-        {"survival": Tensor[B, 2]}
+        {"survival": Tensor[B, 1]}
 
     Attention weights (image vs gene per patient) are cached after each
     forward pass and readable via get_attention_weights().
@@ -67,7 +67,7 @@ class JointModel(nn.Module):
         )
 
         # Survival head (single task)
-        self.head_survival = nn.Linear(d, 2)
+        self.head_survival = nn.Linear(d, 1)
 
         self._attn_weights: torch.Tensor | None = None
 
@@ -83,7 +83,7 @@ class JointModel(nn.Module):
         return {"survival": self.head_survival(shared)}
 
     def get_attention_weights(self) -> torch.Tensor:
-        """Returns [B, 2]: (image_weight, gene_weight) per sample."""
+        """Returns [B, 1]: (image_weight, gene_weight) per sample."""
         if self._attn_weights is None:
             raise RuntimeError("Call forward() before get_attention_weights().")
         return self._attn_weights
@@ -152,7 +152,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             out = model(dummy)
 
-        assert out["survival"].shape == (B, 2), "survival shape error"
+        assert out["survival"].shape == (B, 1), "survival shape error"
         assert "subtype" not in out,            "subtype head should not exist"
 
         attn = model.get_attention_weights()
