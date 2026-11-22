@@ -332,9 +332,10 @@ dominant-modality updates with Gaussian noise injection, and
 We train using the negative partial log-likelihood of the Cox
 proportional hazards model~\cite{cox1972}:
 \begin{equation}
-\mathcal{L}_{\text{Cox}} = -\frac{1}{|\mathcal{D}|}
-\sum_{i: \delta_i = 1}
-\left( r_i - \log \sum_{j: t_j \geq t_i} e^{r_j} \right)
+\mathcal{L}_{\text{Cox}}(\mathcal{B}) =
+-\frac{1}{|\mathcal{B}|}
+\sum_{i\in\mathcal{B}:\delta_i=1}
+\left( r_i-\log\sum_{j\in R_i^\mathcal{B}} e^{r_j}\right)
 \label{eq:cox}
 \end{equation}
 Here $\delta_i=1$ is an observed event, $\delta_i=0$ denotes
@@ -452,7 +453,7 @@ perturbation radius $\rho$, suppression strength $\alpha$
 We evaluate on five TCGA cancer cohorts (Table~\ref{tab:datasets}).
 Histopathology slide embeddings are extracted using
 UNI~\cite{chen2024uni} (1024-dim for BRCA) or UNI2-h (1536-dim for
-all others). We use pre-extracted slide-leve    l embeddings publicly
+all others). We use pre-extracted slide-level embeddings publicly
 released by Jaume et al.~\cite{jaume2024tangle}, computed by
 mean-pooling over non-overlapping $256\!\times\!256$ patch features.
 This avoids end-to-end tile-level training and enables rapid
