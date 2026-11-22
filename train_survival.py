@@ -79,7 +79,7 @@ def cox_loss(risk_scores: torch.Tensor,
              vital_status: torch.Tensor) -> torch.Tensor:
     """
     Negative partial log-likelihood for Cox PH model.
-    risk_scores  : [B] scalar risk per patient (logit of dying)
+    risk_scores  : [B] scalar risk per patient (scalar Cox log-risk)
     os_months    : [B] survival time
     vital_status : [B] event indicator (1 = died, 0 = censored)
     """
@@ -312,13 +312,13 @@ def train_one_epoch(model, loader, optimizer, device, is_chaotic):
 
         if is_chaotic:
             outputs = model(inp)
-            risk    = outputs["survival"][:, 1]   # logit of dying
+            risk    = outputs["survival"].squeeze(-1)   # logit of dying
             loss    = cox_loss(risk, os_m, vs)
             optimizer.step(loss, inp, labels_dev)
         else:
             optimizer.zero_grad()
             outputs = model(inp)
-            risk    = outputs["survival"][:, 1]
+            risk    = outputs["survival"].squeeze(-1)
             loss    = cox_loss(risk, os_m, vs)
             loss.backward()
             optimizer.step()
@@ -344,7 +344,7 @@ def evaluate(model, loader, device):
         inp  = {"image": img, "gene": gene}
 
         outputs = model(inp)
-        risk    = outputs["survival"][:, 1]
+        risk    = outputs["survival"].squeeze(-1)
         loss    = cox_loss(risk, os_m, vs)
         total_loss += loss.item()
 
