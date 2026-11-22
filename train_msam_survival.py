@@ -239,7 +239,7 @@ def train_one_epoch_closure(model, loader, opt, device, log_grads=False):
 
         def closure():
             out = model(inp)
-            risk = out["survival"][:, 1]
+            risk = out["survival"].squeeze(-1)
             loss = cox_loss(risk, os_m, vs)
             return loss, out
 
@@ -279,7 +279,7 @@ def train_one_epoch_ogm(model, loader, ogm_opt, device, log_grads=False):
         }
 
         outputs = model(inp)
-        risk = outputs["survival"][:, 1]
+        risk = outputs["survival"].squeeze(-1)
         loss = cox_loss(risk, os_m, vs)
 
         ogm_opt.step(loss, inp, labels_dev)
