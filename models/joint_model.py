@@ -83,7 +83,7 @@ class JointModel(nn.Module):
         return {"survival": self.head_survival(shared)}
 
     def get_attention_weights(self) -> torch.Tensor:
-        """Returns [B, 1]: (image_weight, gene_weight) per sample."""
+        """Returns [B, 2]: (image_weight, gene_weight) per sample."""
         if self._attn_weights is None:
             raise RuntimeError("Call forward() before get_attention_weights().")
         return self._attn_weights
