@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 
 class OGMWrapper:
     """
-    Wraps any standard PyTorch optimizer with adaptive OGM-GE gradient modulation.
+    Wraps any standard PyTorch optimizer with adaptive Cox-Shapley gradient modulation.
     No chaotic LR — fixed/standard LR only.
 
     Adaptive gating (new): suppression only fires when BOTH conditions hold:
@@ -86,7 +86,7 @@ class OGMWrapper:
     @torch.no_grad()
     def _modulate_gradients(self, contributions: Dict[str, float]) -> None:
         """
-        Adaptive OGM-GE gradient suppression.
+        Adaptive OGM-GE gradient suppression using Cox-Shapley contribution weights.
 
         Gate 1 — imbalance threshold:
             If dominant − weaker ≤ imbalance_threshold → skip (modalities balanced).
@@ -150,7 +150,7 @@ class OGMWrapper:
         Args:
             loss   : scalar loss tensor
             inputs : modality input dict (needed for OGM-GE)
-            labels : label dict with key "survival" (needed for OGM-GE)
+            labels : dict with "os_months" and "vital_status" (needed for Cox-Shapley)
         """
         self.optimizer.zero_grad()
         loss.backward()
@@ -163,6 +163,12 @@ class OGMWrapper:
         )
 
         if apply_ogm:
+            required = ("os_months", "vital_status")
+            if not isinstance(labels, dict) or any(k not in labels for k in required):
+                raise ValueError(
+                    "OGMWrapper Cox-Shapley requires labels with "
+                    "'os_months' and 'vital_status' tensors."
+                )
             contributions = self._compute_contributions(inputs, labels)
             self._modulate_gradients(contributions)
             for m in self.modality_names:
