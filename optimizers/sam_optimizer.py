@@ -154,31 +154,38 @@ if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from models.joint_model import build_model
+    from optimizers.survival_coalition import batch_cox_loss
 
-    B, N_GENES, IMG_DIM = 4, 1000, 256
+    torch.manual_seed(42)
+    B, N_GENES, IMG_DIM = 8, 1000, 256
 
     model = build_model(n_genes=N_GENES, image_dim=IMG_DIM, verbose=False)
-    base_opt = torch.optim.SGD(model.parameters(), lr=1e-3,
-                                momentum=0.9, weight_decay=1e-4)
+    base_opt = torch.optim.SGD(
+        model.parameters(), lr=1e-3, momentum=0.9, weight_decay=1e-4
+    )
     sam_opt = SAMOptimizer(base_opt, model, rho=0.05)
 
-    criterion = torch.nn.CrossEntropyLoss()
+    times = torch.tensor([4., 8., 11., 15., 18., 21., 29., 36.])
+    events = torch.tensor([1., 0., 1., 1., 0., 1., 0., 1.])
 
     for step in range(5):
         inputs = {
             "image": torch.randn(B, IMG_DIM),
             "gene": torch.randn(B, N_GENES),
         }
-        labels = torch.randint(0, 2, (B,))
-
         model.train()
 
         def closure():
-            out = model(inputs)
-            loss = criterion(out["survival"], labels)
-            return loss, out
+            output = model(inputs)
+            assert output["survival"].shape == (B, 1)
+            risk = output["survival"].squeeze(-1)
+            loss = batch_cox_loss(risk, times, events)
+            return loss, output
 
-        loss, out = sam_opt.step(closure)
-        print(f"  step {step+1}  loss={loss.item():.4f}  lr={sam_opt.get_current_lr():.6f}")
+        loss, output = sam_opt.step(closure)
+        assert torch.isfinite(loss), "Cox loss became non-finite"
+        assert output["survival"].shape == (B, 1)
+        print(f"  step {step+1}  Cox loss={loss.item():.4f}"
+              f"  lr={sam_opt.get_current_lr():.6f}")
 
     print("All SAMOptimizer self-tests PASSED.")
