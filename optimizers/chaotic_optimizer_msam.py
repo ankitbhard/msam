@@ -1,51 +1,26 @@
 """
-Multimodal Chaotic Optimizer with M-SAM (Modality-Aware SAM) extension.
+SGM-SAM: Shapley-guided modality-targeted SAM and gradient modulation
+for Cox cancer survival prediction.
 
-Combines three complementary mechanisms:
-  1. ChaoticLRScheduler  — logistic-map LR scheduling (non-monotone exploration)
-  2. Modality-Aware SAM  — SAM perturbation applied only to dominant modality
-                           encoder, finding flatter minima for that modality
-  3. OGM-GE             — On-the-fly Gradient Modulation + Generalization
-                           Enhancement; suppresses dominant modality gradients
+For each minibatch, estimate how much image and gene coalitions improve
+the censored Cox partial likelihood over a zero-risk reference:
 
-Contribution estimation uses Shapley values (more principled than unimodal
-accuracy used in original OGM-GE):
-    φ_image = 0.5 * acc_image + 0.5 * (acc_full - acc_gene)
-    φ_gene  = 0.5 * acc_gene  + 0.5 * (acc_full - acc_image)
-Requires 3 forward passes per OGM-GE step (image-only, gene-only, full).
+    v(S) = CoxLoss(empty) - CoxLoss(S), with v(empty) = 0
+    phi_image = 0.5*v(image) + 0.5*(v(full) - v(gene))
+    phi_gene  = 0.5*v(gene)  + 0.5*(v(full) - v(image))
 
-SAM perturbation (dominant modality encoder only):
-    ε = ρ * grad / ||grad||         (unit-normalised, scaled by ρ)
-    θ_dom += ε                      (perturb)
-    second forward + backward       (get gradients at perturbed point)
-    θ_dom -= ε                      (restore)
-Then OGM-GE modulation and base optimizer step follow.
+Negative Shapley contributions are clipped to zero and the contributions
+are normalized for gating. The dominant modality's encoder alone receives
+the SAM perturbation, using the gradient of the TOTAL Cox loss restricted
+to that encoder's parameters. A second backward pass differentiates the
+full loss at the perturbed point; then the perturbation is restored.
+Finally, the selected encoder gradient is suppressed when its normalized
+contribution exceeds 0.5, optionally with Gaussian noise enhancement.
 
-Reference: M-SAM (NeurIPS 2025) — modality-aware sharpness-aware minimisation.
-
-Usage:
-    from optimizers.chaotic_optimizer_msam import MultimodalChaoticOptimizerMSAM
-
-    base_opt = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9,
-                               weight_decay=1e-4)
-    msam_opt = MultimodalChaoticOptimizerMSAM(
-        base_opt, model,
-        modality_names=["image", "gene"],
-        base_lr=1e-3,
-        rho=0.05,       # SAM perturbation radius
-        alpha=0.5,      # OGM-GE suppression strength
-    )
-
-    # training loop — requires closure
-    for inputs, labels in loader:
-        def closure():
-            out  = model(inputs)
-            loss = criterion(out, labels)
-            return loss, out
-
-        loss, out = msam_opt.step(closure, inputs, labels)
+Cox-Shapley requires labels containing 'os_months' and 'vital_status'.
+The scalar survival output has shape [batch_size, 1]. The optimizer
+can wrap a standard PyTorch optimizer and supports an LR scheduler.
 """
-
 import torch
 import torch.nn as nn
 from typing import Callable, Dict, List, Optional, Tuple
@@ -202,7 +177,7 @@ class MultimodalChaoticOptimizerMSAM:
             closure : callable () → (loss, outputs_dict)
                       Should NOT call zero_grad internally.
             inputs  : modality input dict (for Shapley; can be None to skip)
-            labels  : label dict with key "survival" (for Shapley; can be None)
+            labels  : dict with "os_months" and "vital_status" (for Cox-Shapley)
 
         Returns:
             (loss, outputs) from the second forward pass.
@@ -261,50 +236,58 @@ if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from models.joint_model import build_model
+    from optimizers.survival_coalition import batch_cox_loss
 
-    B, N_GENES, IMG_DIM = 4, 1000, 256
+    torch.manual_seed(42)
+    B, N_GENES, IMG_DIM = 8, 1000, 256
 
-    model    = build_model(n_genes=N_GENES, image_dim=IMG_DIM,
-                           n_subtypes=4, verbose=False)
-    base_opt = torch.optim.SGD(model.parameters(), lr=1e-3,
-                                momentum=0.9, weight_decay=1e-4)
-    msam_opt = MultimodalChaoticOptimizerMSAM(
-        base_opt, model,
-        modality_names=["image", "gene"],
-        base_lr=1e-3,
-        rho=0.05, alpha=0.5,
-        compute_every=1,
+    model = build_model(n_genes=N_GENES, image_dim=IMG_DIM, verbose=False)
+    base_opt = torch.optim.SGD(
+        model.parameters(), lr=1e-3, momentum=0.9, weight_decay=1e-4
     )
-
-    criterion_surv = torch.nn.CrossEntropyLoss()
-    criterion_sub  = torch.nn.CrossEntropyLoss()
+    msam_opt = MultimodalChaoticOptimizerMSAM(
+        base_opt, model, modality_names=["image", "gene"],
+        base_lr=1e-3, rho=0.05, alpha=0.5, compute_every=1
+    )
 
     lrs = []
     for step in range(5):
         inputs = {
             "image": torch.randn(B, IMG_DIM),
-            "gene":  torch.randn(B, N_GENES),
+            "gene": torch.randn(B, N_GENES),
         }
         labels = {
-            "survival": torch.randint(0, 2, (B,)),
-            "subtype":  torch.randint(0, 4, (B,)),
+            "os_months": torch.tensor(
+                [4., 8., 11., 15., 18., 21., 29., 36.]
+            ),
+            "vital_status": torch.tensor(
+                [1., 0., 1., 1., 0., 1., 0., 1.]
+            ),
         }
 
         model.train()
 
         def closure():
-            out  = model(inputs)
-            loss = (criterion_surv(out["survival"], labels["survival"]) +
-                    1.5 * criterion_sub(out["subtype"], labels["subtype"]))
-            return loss, out
+            output = model(inputs)
+            assert output["survival"].shape == (B, 1)
+            risk = output["survival"].squeeze(-1)
+            loss = batch_cox_loss(
+                risk, labels["os_months"], labels["vital_status"]
+            )
+            return loss, output
 
-        loss, out = msam_opt.step(closure, inputs, labels)
+        loss, output = msam_opt.step(closure, inputs, labels)
+        assert torch.isfinite(loss), "Cox loss became non-finite"
+        assert output["survival"].shape == (B, 1)
         lrs.append(msam_opt.get_current_lr())
-        print(f"  step {step+1}  loss={loss.item():.4f}  lr={lrs[-1]:.6f}")
+        print(f"  step {step+1}  Cox loss={loss.item():.4f}"
+              f"  lr={lrs[-1]:.6f}")
 
     hist = msam_opt.get_contribution_history()
-    assert "image" in hist and "gene" in hist
-    assert len(hist["image"]) == 5
-    print(f"\nShapley image: {[f'{v:.3f}' for v in hist['image']]}")
-    print(f"Shapley gene : {[f'{v:.3f}' for v in hist['gene']]}")
+    assert len(hist["image"]) == len(hist["gene"]) == 5
+    for img, gene in zip(hist["image"], hist["gene"]):
+        assert 0.0 <= img <= 1.0 and 0.0 <= gene <= 1.0
+        assert abs(img + gene - 1.0) < 1e-6, "Invalid Shapley weights"
+    print(f"\nCox-Shapley image: {[f'{v:.3f}' for v in hist['image']]}")
+    print(f"Cox-Shapley gene : {[f'{v:.3f}' for v in hist['gene']]}")
     print("All MultimodalChaoticOptimizerMSAM self-tests PASSED.")
